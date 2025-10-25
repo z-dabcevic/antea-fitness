@@ -42,8 +42,12 @@ export default function NavBar() {
             🎁 Nagrade
           </Link>
           <Link href="/progress" className="hover:text-black transition">
-            📅 Napredak
+            📅 Tjedni napredak
           </Link>
+          <Link href="/daily-progress" className="hover:underline">
+            📈 Dnevni napredak
+          </Link>
+
           {isGM && (
             <Link href="/approvals" className="hover:text-black transition">
               ✅ Odobravanje

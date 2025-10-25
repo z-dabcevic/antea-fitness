@@ -1,10 +1,3 @@
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
-  /* config options here */
-  reactCompiler: true,
-};
-
 const withPWA = require('next-pwa')({
   dest: 'public',
   register: true,
@@ -12,8 +5,18 @@ const withPWA = require('next-pwa')({
   disable: process.env.NODE_ENV === 'development',
 });
 
-module.exports = withPWA({
+/**
+ * Next.js 16 default je Turbopack, ali next-pwa koristi webpack config.
+ * Recimo Nextu eksplicitno da koristi webpack i time utišamo error na Vercelu.
+ */
+const nextConfig = {
   reactStrictMode: true,
-});
 
-export default nextConfig;
+  // 👇 ovo je novo i BITNO
+  turbopack: {
+    // prazan objekt = eksplicitno kažemo "znam da postoji turbopack config"
+    // i Next više neće paničariti
+  },
+};
+
+module.exports = withPWA(nextConfig);

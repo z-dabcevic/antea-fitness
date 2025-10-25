@@ -66,7 +66,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 3. dohvati action_log
+    // 3. dohvati action_log red
     const { data: rawLogRow, error: logErr } = await supabase
       .from("action_log")
       .select(
@@ -85,37 +85,40 @@ export async function POST(req: Request) {
       );
     }
 
-    // --- TYPE NARROWING ---
-    // eksplicitno opišemo što očekujemo iz baze
-    const logRow = rawLogRow as {
-      id: string;
-      user_id: string;
-      status: string;
-      action_type: {
-        id: number;
-        base_points: number;
-        negative: boolean;
-      } | null;
-    };
+    // ----- NORMALIZACIJA action_type -----
+    // Supabase zna vratiti `action_type` kao objekt ili kao array s jednim elementom,
+    // a TypeScript u buildu poludi jer misli da je to uvijek array.
+    // Ovdje ga ručno normaliziramo.
+    //
+    // Koristimo `any` da ušutkamo TS u buildu, jer nam ovdje sigurnost tipova nije kritična
+    // (u svakom slučaju validaciju radimo i runtime-om).
+    const rowAny: any = rawLogRow;
 
-    if (logRow.status === "approved") {
-      console.log("already approved");
-      return NextResponse.json({
-        message: "Već odobreno.",
-      });
+    let actionType: any = rowAny.action_type;
+    if (Array.isArray(actionType)) {
+      // Ako iz nekog razloga dobijemo niz, uzmi prvi element
+      actionType = actionType[0];
     }
 
-    if (!logRow.action_type) {
-      console.error("no action_type attached to logRow");
+    if (!actionType) {
+      console.error("no action_type after normalize");
       return NextResponse.json(
         { error: "Nema definiran tip aktivnosti." },
         { status: 500 }
       );
     }
 
+    // ako je već approved, prekini
+    if (rowAny.status === "approved") {
+      console.log("already approved");
+      return NextResponse.json({
+        message: "Već odobreno.",
+      });
+    }
+
     // 4. izračun bodova
-    const basePoints = logRow.action_type.base_points || 0;
-    const pointsToApply = logRow.action_type.negative
+    const basePoints = actionType.base_points || 0;
+    const pointsToApply = actionType.negative
       ? -Math.abs(basePoints)
       : Math.abs(basePoints);
 
@@ -125,7 +128,7 @@ export async function POST(req: Request) {
     const { data: statsRow, error: statsErr } = await supabase
       .from("user_stats")
       .select("total_points")
-      .eq("user_id", logRow.user_id)
+      .eq("user_id", rowAny.user_id)
       .single();
 
     console.log("statsRow =", statsRow, "statsErr =", statsErr);
@@ -141,14 +144,14 @@ export async function POST(req: Request) {
     const newTotal = (statsRow.total_points || 0) + pointsToApply;
     console.log("newTotal =", newTotal);
 
-    // 6. update user_stats
+    // 6. update user_stats (dodaj bodove)
     const { error: statsUpdateErr } = await supabase
       .from("user_stats")
       .update({
         total_points: newTotal,
         updated_at: new Date().toISOString(),
       })
-      .eq("user_id", logRow.user_id);
+      .eq("user_id", rowAny.user_id);
 
     console.log("statsUpdateErr =", statsUpdateErr);
 
@@ -163,8 +166,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 7. označi action_log kao approved
-    // napomena: koristimo samo status sada, bez approved_at kolone
+    // 7. označi action_log approved (bez approved_at jer ga nemaš u tablici)
     const { error: logUpdateErr } = await supabase
       .from("action_log")
       .update({

@@ -7,7 +7,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// helper: tko je logiran (hero ili gm), čita cookie token
 async function getUserFromCookie(req: Request) {
   const cookieHeader = req.headers.get("cookie") || "";
   const match = cookieHeader.split("; ").find((c) => c.startsWith("token="));
@@ -42,7 +41,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Nema rewardId." }, { status: 400 });
   }
 
-  // 3. nađi app_user.id koji odgovara ovom auth korisniku
+  // 3. mapiraj auth user -> app_user
   const { data: appUserRow, error: appUserErr } = await supabase
     .from("app_user")
     .select("id")
@@ -58,7 +57,7 @@ export async function POST(req: Request) {
 
   const appUserId = appUserRow.id;
 
-  // 4. dohvatimo nagradu (naslov, cijenu itd.)
+  // 4. dohvat nagrade
   const { data: rewardRow, error: rewardErr } = await supabase
     .from("reward")
     .select("id, title, cost")
@@ -74,7 +73,7 @@ export async function POST(req: Request) {
 
   const price = rewardRow.cost;
 
-  // 5. dohvatimo user_stats da vidimo ima li dovoljno bodova
+  // 5. dohvat trenutnih bodova
   const { data: statsRow, error: statsErr } = await supabase
     .from("user_stats")
     .select("total_points")
@@ -115,7 +114,7 @@ export async function POST(req: Request) {
     );
   }
 
-  // 7. ZAPIŠI U LOG (ovo je novo i bitno)
+  // 7. ZAPIŠI U LOG  👇 OVO JE KLJUČNI DIO
   const { error: logInsertErr } = await supabase
     .from("reward_log")
     .insert({
@@ -125,9 +124,8 @@ export async function POST(req: Request) {
     });
 
   if (logInsertErr) {
-    // ako ovo pukne, bodovi su već skinuti,
-    // ali nemamo evidenciju. To je rijetko, ali ajmo svejedno javiti.
     console.error("reward_log insert error", logInsertErr);
+    // ne rušimo request prema korisniku, ali logiramo u server console
   }
 
   return NextResponse.json({

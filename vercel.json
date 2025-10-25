@@ -1,3 +1,9 @@
 {
-  "buildCommand": "next build --webpack"
+  "buildCommand": "next build --webpack",
+    "cron": [
+    {
+      "path": "/api/daily-close",
+      "schedule": "5 23 * * *"
+    }
+  ]
 }

@@ -1,92 +1,137 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import * as jose from "jose";
 
-const supabaseAdmin = createClient(
+const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-export async function POST(req: Request) {
-  const body = await req.json();
-  const rewardId = body.rewardId;
+// helper: tko je logiran (hero ili gm), čita cookie token
+async function getUserFromCookie(req: Request) {
+  const cookieHeader = req.headers.get("cookie") || "";
+  const match = cookieHeader.split("; ").find((c) => c.startsWith("token="));
+  if (!match) return null;
+  const token = match.split("=")[1];
 
-  // tko je ulogiran? (ovo je lagani hack jer koristimo anon key i browser session:
-  // mi tu NEMAMO session automatski, pa ćemo ovo još malo dotjerati kasnije.
-  //
-  // Za sada ćemo vratiti grešku ako ne znamo usera.
-  //
-  // Pravo rješenje je: poslati auth_id iz fetch poziva s frontenda.
-  const authId = body.authId;
-  if (!authId) {
-    return NextResponse.json({ error: "Nema authId" }, { status: 401 });
+  try {
+    const { payload } = await jose.jwtVerify(
+      token,
+      new TextEncoder().encode(process.env.NEXTAUTH_JWT_SECRET!)
+    );
+    return payload as {
+      sub: string;   // local_user.id
+      role: string;  // "hero" ili "gm"
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function POST(req: Request) {
+  // 1. provjeri login
+  const currentUser = await getUserFromCookie(req);
+  if (!currentUser) {
+    return NextResponse.json({ error: "Nisi prijavljen." }, { status: 401 });
   }
 
-  // 1. Dohvati app_user reda za tog authId
-  const { data: userRow, error: userErr } = await supabaseAdmin
+  // 2. uzmi rewardId iz bodyja
+  const body = await req.json();
+  const { rewardId } = body;
+  if (!rewardId) {
+    return NextResponse.json({ error: "Nema rewardId." }, { status: 400 });
+  }
+
+  // 3. nađi app_user.id koji odgovara ovom auth korisniku
+  const { data: appUserRow, error: appUserErr } = await supabase
     .from("app_user")
     .select("id")
-    .eq("auth_id", authId)
+    .eq("auth_id", currentUser.sub)
     .single();
 
-  if (userErr || !userRow) {
-    return NextResponse.json({ error: "Korisnik ne postoji" }, { status: 400 });
+  if (appUserErr || !appUserRow) {
+    return NextResponse.json(
+      { error: "Nema profila korisnika." },
+      { status: 400 }
+    );
   }
 
-  // 2. user_stats
-  const { data: statsRow, error: statsErr } = await supabaseAdmin
-    .from("user_stats")
-    .select("total_points")
-    .eq("user_id", userRow.id)
-    .single();
+  const appUserId = appUserRow.id;
 
-  if (statsErr || !statsRow) {
-    return NextResponse.json({ error: "Nema user_stats" }, { status: 400 });
-  }
-
-  // 3. reward
-  const { data: rewardRow, error: rewardErr } = await supabaseAdmin
+  // 4. dohvatimo nagradu (naslov, cijenu itd.)
+  const { data: rewardRow, error: rewardErr } = await supabase
     .from("reward")
     .select("id, title, cost")
     .eq("id", rewardId)
     .single();
 
   if (rewardErr || !rewardRow) {
-    return NextResponse.json({ error: "Nagrada ne postoji" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Nagrada ne postoji." },
+      { status: 404 }
+    );
   }
 
-  if (statsRow.total_points < rewardRow.cost) {
-    return NextResponse.json({ error: "Nedovoljno bodova 🥺" }, { status: 400 });
+  const price = rewardRow.cost;
+
+  // 5. dohvatimo user_stats da vidimo ima li dovoljno bodova
+  const { data: statsRow, error: statsErr } = await supabase
+    .from("user_stats")
+    .select("total_points")
+    .eq("user_id", appUserId)
+    .single();
+
+  if (statsErr || !statsRow) {
+    return NextResponse.json(
+      { error: "Ne mogu dohvatiti bodove." },
+      { status: 500 }
+    );
   }
 
-  const newTotal = statsRow.total_points - rewardRow.cost;
+  const currentPoints = statsRow.total_points ?? 0;
 
-  const { error: updErr } = await supabaseAdmin
+  if (currentPoints < price) {
+    return NextResponse.json(
+      { error: "Nemaš dovoljno bodova." },
+      { status: 400 }
+    );
+  }
+
+  // 6. skini bodove
+  const newTotal = currentPoints - price;
+
+  const { error: statsUpdateErr } = await supabase
     .from("user_stats")
     .update({
       total_points: newTotal,
       updated_at: new Date().toISOString(),
     })
-    .eq("user_id", userRow.id);
+    .eq("user_id", appUserId);
 
-  if (updErr) {
-    return NextResponse.json({ error: "Nisam mogao skinuti bodove" }, { status: 500 });
+  if (statsUpdateErr) {
+    return NextResponse.json(
+      { error: "Ne mogu skinuti bodove." },
+      { status: 500 }
+    );
   }
 
-  const { error: redErr } = await supabaseAdmin
-    .from("redemption")
+  // 7. ZAPIŠI U LOG (ovo je novo i bitno)
+  const { error: logInsertErr } = await supabase
+    .from("reward_log")
     .insert({
-      user_id: userRow.id,
+      user_id: appUserId,
       reward_id: rewardRow.id,
-      status: "approved",
+      cost_at_redeem: price,
     });
 
-  if (redErr) {
-    return NextResponse.json({ error: "Nisam mogao kreirati redemption" }, { status: 500 });
+  if (logInsertErr) {
+    // ako ovo pukne, bodovi su već skinuti,
+    // ali nemamo evidenciju. To je rijetko, ali ajmo svejedno javiti.
+    console.error("reward_log insert error", logInsertErr);
   }
 
   return NextResponse.json({
-    ok: true,
+    message: "Nagrada uzeta 🎁",
     remaining: newTotal,
-    message: `✅ Nagrada uzeta: "${rewardRow.title}"`,
   });
 }

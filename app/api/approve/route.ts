@@ -7,6 +7,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+// helper: čitanje JWT iz cookieja
 async function getUserFromCookie(req: Request) {
   const cookieHeader = req.headers.get("cookie") || "";
   const match = cookieHeader.split("; ").find((c) => c.startsWith("token="));
@@ -19,7 +20,11 @@ async function getUserFromCookie(req: Request) {
       token,
       new TextEncoder().encode(process.env.NEXTAUTH_JWT_SECRET!)
     );
-    return payload; // { sub, username, role }
+    return payload as {
+      sub: string;
+      username: string;
+      role: string;
+    };
   } catch (err) {
     console.error("JWT verify error:", err);
     return null;
@@ -62,7 +67,7 @@ export async function POST(req: Request) {
     }
 
     // 3. dohvati action_log
-    const { data: logRow, error: logErr } = await supabase
+    const { data: rawLogRow, error: logErr } = await supabase
       .from("action_log")
       .select(
         "id, user_id, status, action_type:action_type_id(id, base_points, negative)"
@@ -70,9 +75,9 @@ export async function POST(req: Request) {
       .eq("id", id)
       .single();
 
-    console.log("logRow =", logRow, "logErr =", logErr);
+    console.log("rawLogRow =", rawLogRow, "logErr =", logErr);
 
-    if (logErr || !logRow) {
+    if (logErr || !rawLogRow) {
       console.error("cannot load action_log");
       return NextResponse.json(
         { error: "Ne mogu pronaći zahtjev." },
@@ -80,11 +85,32 @@ export async function POST(req: Request) {
       );
     }
 
+    // --- TYPE NARROWING ---
+    // eksplicitno opišemo što očekujemo iz baze
+    const logRow = rawLogRow as {
+      id: string;
+      user_id: string;
+      status: string;
+      action_type: {
+        id: number;
+        base_points: number;
+        negative: boolean;
+      } | null;
+    };
+
     if (logRow.status === "approved") {
       console.log("already approved");
       return NextResponse.json({
         message: "Već odobreno.",
       });
+    }
+
+    if (!logRow.action_type) {
+      console.error("no action_type attached to logRow");
+      return NextResponse.json(
+        { error: "Nema definiran tip aktivnosti." },
+        { status: 500 }
+      );
     }
 
     // 4. izračun bodova
@@ -137,16 +163,14 @@ export async function POST(req: Request) {
       );
     }
 
-  // 7. označi action_log approved
-  const { error: logUpdateErr } = await supabase
-    .from("action_log")
-    .update({
-      status: "approved",
-      // ako nema stupca approved_at u tvojoj tablici,
-      // onda ga jednostavno ne postavljamo
-    })
-    .eq("id", id);
-
+    // 7. označi action_log kao approved
+    // napomena: koristimo samo status sada, bez approved_at kolone
+    const { error: logUpdateErr } = await supabase
+      .from("action_log")
+      .update({
+        status: "approved",
+      })
+      .eq("id", id);
 
     console.log("logUpdateErr =", logUpdateErr);
 

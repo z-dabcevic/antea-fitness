@@ -5,6 +5,7 @@ import { createBrowserSupabase } from "@/lib/supabaseBrowser";
 
 export default function HomePage() {
   const sb = createBrowserSupabase();
+  const [buildInfo, setBuildInfo] = useState<{sha: string|null, branch: string|null, ts: string}|null>(null);
 
   const [loading, setLoading] = useState(true);
   const [totalPoints, setTotalPoints] = useState<number | null>(null);
